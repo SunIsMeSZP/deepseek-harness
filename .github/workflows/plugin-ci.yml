@@ -1,0 +1,97 @@
+# Per-plugin CI: the plugin engineering layer's fan-out lane. The matrix is
+# the committed registry (packages/plugins/registry.json), so each plugin's
+# unit tests, scoped coverage gate, and optional keyless e2e run in their own
+# jobs while the shared plugin gates run once. The main ci.yml still owns the
+# whole-repository coverage, snapshot, and consumer gates.
+name: Plugin CI
+
+on:
+  pull_request:
+    paths:
+      - 'packages/plugins/**'
+      - 'scripts/plugin-*.ts'
+      - 'scripts/scaffold-plugin.ts'
+      - 'vitest.plugin.config.ts'
+      - '.github/workflows/plugin-ci.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'packages/plugins/**'
+      - 'scripts/plugin-*.ts'
+      - 'scripts/scaffold-plugin.ts'
+      - 'vitest.plugin.config.ts'
+      - '.github/workflows/plugin-ci.yml'
+
+permissions:
+  contents: read
+
+env:
+  PRIMARY_NODE_VERSION: '24'
+  DSH_TELEMETRY_DISABLED: '1'
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      plugins: ${{ steps.read.outputs.plugins }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: read
+        run: echo "plugins=$(node -p "JSON.stringify(require('./packages/plugins/registry.json').plugins)")" >> "$GITHUB_OUTPUT"
+
+  unit:
+    needs: matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        plugin: ${{ fromJSON(needs.matrix.outputs.plugins) }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec vitest run packages/plugins/${{ matrix.plugin }}/tests
+      - name: Scoped per-file coverage gate
+        env:
+          PLUGIN: packages/plugins/${{ matrix.plugin }}
+        run: pnpm exec vitest run packages/plugins/${{ matrix.plugin }}/tests --coverage --config vitest.plugin.config.ts
+
+  e2e:
+    needs: matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        plugin: ${{ fromJSON(needs.matrix.outputs.plugins) }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+      - run: pnpm install --frozen-lockfile
+      - name: Keyless Loader e2e when the plugin ships one
+        run: |
+          if [ -f "examples/headless-agent/tests/${{ matrix.plugin }}.e2e.ts" ]; then
+            pnpm exec vitest run --config vitest.e2e.config.ts "examples/headless-agent/tests/${{ matrix.plugin }}.e2e.ts"
+          else
+            echo "no e2e fixture for ${{ matrix.plugin }}; skipping"
+          fi
+
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run plugin:verify
+      - run: pnpm run plugin:assemble:check
+      - run: pnpm run verify-tool-catalog
+      - run: pnpm run verify-module-graph
+      - run: pnpm run verify-cordis-config

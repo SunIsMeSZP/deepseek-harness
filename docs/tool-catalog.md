@@ -39,6 +39,8 @@ This table connects model-visible tool names to the plugin package and service s
 | `@deepseek-ai/dsh-tool-todo` | `todo_write` | `ctx.tools`, `owning Agent session` | `tool/call`, `todo/write`, `tool/result` | - | todo_write is session-owned state; UIs render the latest todo/write event as a checklist. `allowParallelInProgress` is required with no default, so the catalog states its choice: `true`, whose description invites several `in_progress` items. A deployment choosing `false` receives the same tool with a description asking for exactly one active task. |
 | `@deepseek-ai/dsh-tool-workflow` | `workflow` | `ctx.tools`, `ctx.workflowEngine`, `ctx.systemPrompt`, `a calling Agent (exec.agent parents the script children)` | `tool/call`, `tool/result` | - | - |
 | `@deepseek-ai/dsh-tool-web` | `web_fetch`, `web_search` | `ctx.tools`, `ctx.web`, `ctx.systemPrompt` | `tool/call`, `tool/result` | - | web_search and web_fetch keep provider selection behind ctx.web so model-visible schemas stay stable across backend swaps. |
+| `@deepseek-ai/dsh-clock` | `clock` | `ctx.tools` | `tool/call`, `tool/result` | - | The clock tool reads the system clock in a configured or per-call IANA zone; invalid zones fail the call loud with CLOCK_INVALID_ZONE. |
+| `@deepseek-ai/dsh-weather` | `weather` | `ctx.tools`, `ctx.web` | `tool/call`, `tool/result` | - | The weather tool fetches current conditions through the web seam from a configurable forecast API; refusals carry WEATHER_LOCATION_REQUIRED, WEATHER_INVALID_COORDINATES, WEATHER_API_STATUS, and WEATHER_BAD_RESPONSE. |
 
 <a id="deepseek-aidsh-tool-ask-user"></a>
 
@@ -1871,3 +1873,63 @@ Search the web for current information. Returns an optional summary answer and a
 Source: [`packages/web/tool-web/src/index.ts`](../packages/web/tool-web/src/index.ts)
 
 web_search and web_fetch keep provider selection behind ctx.web so model-visible schemas stay stable across backend swaps.
+
+<a id="deepseek-aidsh-clock"></a>
+
+## `@deepseek-ai/dsh-clock`
+
+### `clock`
+
+Return the current date and time. The result carries the resolved IANA time zone, the ISO-8601 instant, the zone-local rendering, and Unix milliseconds. Use it when wall-clock facts matter to the task: deadlines, timestamps, or elapsed durations.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "timeZone": {
+      "type": "string",
+      "description": "IANA time zone override for this call. Omit to use the configured zone."
+    },
+    "format": {
+      "type": "string",
+      "description": "'iso' renders the ISO-8601 instant and zone-local text; 'unix' renders Unix milliseconds.",
+      "enum": [
+        "iso",
+        "unix"
+      ]
+    }
+  }
+}
+```
+
+Source: [`packages/plugins/clock/src/index.ts`](../packages/plugins/clock/src/index.ts)
+
+The clock tool reads the system clock in a configured or per-call IANA zone; invalid zones fail the call loud with CLOCK_INVALID_ZONE.
+
+<a id="deepseek-aidsh-weather"></a>
+
+## `@deepseek-ai/dsh-weather`
+
+### `weather`
+
+Return the current weather at one coordinate pair: the Celsius temperature and the numeric weather code. Coordinates are decimal degrees. Use it when the task needs present conditions for a specific place.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "latitude": {
+      "type": "number",
+      "description": "Decimal degrees latitude. Omit to use the configured defaultLocation."
+    },
+    "longitude": {
+      "type": "number",
+      "description": "Decimal degrees longitude. Omit to use the configured defaultLocation."
+    }
+  }
+}
+```
+
+Source: [`packages/plugins/weather/src/index.ts`](../packages/plugins/weather/src/index.ts)
+
+The weather tool fetches current conditions through the web seam from a configurable forecast API; refusals carry WEATHER_LOCATION_REQUIRED, WEATHER_INVALID_COORDINATES, WEATHER_API_STATUS, and WEATHER_BAD_RESPONSE.

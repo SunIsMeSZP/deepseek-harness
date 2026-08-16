@@ -294,6 +294,8 @@
     { "path": "./packages/lsp/lsp" },
     { "path": "./packages/lsp/lsp-stdio" },
     { "path": "./packages/lsp/tool-lsp" },
+    { "path": "./packages/plugins/clock" },
+    { "path": "./packages/plugins/weather" },
     { "path": "./apps/cli" }
   ]
 }

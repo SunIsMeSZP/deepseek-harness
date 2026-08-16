@@ -41,6 +41,8 @@
 | `@deepseek-ai/dsh-tool-todo` | `todo_write` | `ctx.tools`、`owning Agent session` | `tool/call`、`todo/write`、`tool/result` | - | todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为检查清单。`allowParallelInProgress` 是没有默认值的必填项，因此本目录明确选择 `true`，对应描述允许同时存在多个 `in_progress` 项。选择 `false` 的部署会获得同一工具，但描述会要求只能有 1 个活动任务。 |
 | `@deepseek-ai/dsh-tool-workflow` | `workflow` | `ctx.tools`、`ctx.workflowEngine`、`ctx.systemPrompt`、`a calling Agent (exec.agent parents the script children)` | `tool/call`、`tool/result` | - | - |
 | `@deepseek-ai/dsh-tool-web` | `web_fetch`、`web_search` | `ctx.tools`、`ctx.web`、`ctx.systemPrompt` | `tool/call`、`tool/result` | - | web_search 和 web_fetch 将提供方选择置于 ctx.web 之后，使模型可见 schema 在更换后端时保持稳定。 |
+| `@deepseek-ai/dsh-clock` | `clock` | `ctx.tools` | `tool/call`、`tool/result` | - | clock 工具在配置或按调用的 IANA 时区读取系统时钟；非法时区以 CLOCK_INVALID_ZONE 响亮失败。 |
+| `@deepseek-ai/dsh-weather` | `weather` | `ctx.tools`、`ctx.web` | `tool/call`、`tool/result` | - | weather 工具经 web 缝从可配置的预报 API 获取当前天气；拒绝分别携带 WEATHER_LOCATION_REQUIRED、WEATHER_INVALID_COORDINATES、WEATHER_API_STATUS 与 WEATHER_BAD_RESPONSE。 |
 
 <a id="deepseek-aidsh-tool-ask-user"></a>
 
@@ -1876,3 +1878,63 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
 来源：[`packages/web/tool-web/src/index.ts`](../packages/web/tool-web/src/index.ts)
 
 web_search 和 web_fetch 将提供方选择置于 ctx.web 之后，使模型可见 schema 在更换后端时保持稳定。
+
+<a id="deepseek-aidsh-clock"></a>
+
+## `@deepseek-ai/dsh-clock`
+
+### `clock`
+
+返回当前日期与时间。结果携带解析后的 IANA 时区、ISO-8601 时刻、时区本地渲染与 Unix 毫秒。当任务涉及挂钟事实（截止时间、时间戳或耗时）时使用。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "timeZone": {
+      "type": "string",
+      "description": "IANA time zone override for this call. Omit to use the configured zone."
+    },
+    "format": {
+      "type": "string",
+      "description": "'iso' renders the ISO-8601 instant and zone-local text; 'unix' renders Unix milliseconds.",
+      "enum": [
+        "iso",
+        "unix"
+      ]
+    }
+  }
+}
+```
+
+来源：[`packages/plugins/clock/src/index.ts`](../packages/plugins/clock/src/index.ts)
+
+clock 工具在配置或按调用的 IANA 时区读取系统时钟；非法时区以 CLOCK_INVALID_ZONE 响亮失败。
+
+<a id="deepseek-aidsh-weather"></a>
+
+## `@deepseek-ai/dsh-weather`
+
+### `weather`
+
+返回一个坐标对的当前天气：摄氏温度与数字天气代码。坐标为十进制度。当任务需要某地点的当前天气时使用。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "latitude": {
+      "type": "number",
+      "description": "Decimal degrees latitude. Omit to use the configured defaultLocation."
+    },
+    "longitude": {
+      "type": "number",
+      "description": "Decimal degrees longitude. Omit to use the configured defaultLocation."
+    }
+  }
+}
+```
+
+来源：[`packages/plugins/weather/src/index.ts`](../packages/plugins/weather/src/index.ts)
+
+weather 工具经 web 缝从可配置的预报 API 获取当前天气；拒绝分别携带 WEATHER_LOCATION_REQUIRED、WEATHER_INVALID_COORDINATES、WEATHER_API_STATUS 与 WEATHER_BAD_RESPONSE。

@@ -1,0 +1,34 @@
+# Test-only composition: exercise the clock plugin's real Loader/app path with a scripted tool call.
+- id: clock-mock-llm
+  name: './clock-mock-llm.ts'
+
+# Managed child-process groups for the bash executor (spawn/kill/output plumbing).
+- id: subprocess
+  name: '@deepseek-ai/dsh-subprocess-local'
+
+- id: bash
+  name: '@deepseek-ai/dsh-bash-local'
+
+- id: clock
+  name: '@deepseek-ai/dsh-clock'
+  config: {}
+
+- id: agent-spine
+  name: '@deepseek-ai/dsh-agent-spine-demo'
+  config:
+    agents:
+      - id: main
+        provider: clock-mock
+        model: clock-mock
+        cwd: !!js process.cwd()
+    persona: 'Prove the clock tool round trip.'
+    workspaceContext: false
+
+- id: persistence
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'
+  config:
+    root: './.sessions'
+    compression: 'none'
+
+- id: checkpoint-policy
+  name: '@deepseek-ai/dsh-session-checkpoint-policy'
