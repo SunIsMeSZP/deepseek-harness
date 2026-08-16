@@ -394,6 +394,161 @@ export function scanLog(buffer: Buffer): SessionLogScan {
 }
 
 /**
+ * The repair target of the resume-race overlap corruption: a committed prefix
+ * whose tail seqs were replayed by a longer, fully contiguous continuation.
+ * `fromByte`/`toByte` bound the spurious island (whole lines) in plaintext
+ * byte offsets; `events` is the reconstructed log (prefix before the island,
+ * then the whole continuation).
+ */
+export interface OverlapSplice {
+  /** Plaintext byte offset of the island's first line (inclusive). */
+  fromByte: number
+  /** Plaintext byte offset of the continuation's first line (exclusive). */
+  toByte: number
+  /** The spliced event log: committed events before the island, then the continuation. */
+  events: SessionEvent[]
+}
+
+/**
+ * Recover the resume-race overlap corruption from a log's full plaintext.
+ *
+ * The corruption shape (see the JSONL backend README): a process resumes a
+ * session whose turn was interrupted mid-stream, its repair appends synthetic
+ * closers plus an end-seed, and a still-running original loop then streams the
+ * continuation from its own pre-repair cursor — so the log contains a small
+ * island of events whose seqs are replayed by the following contiguous run.
+ * The later run is authoritative: the session that produced it kept running,
+ * so the island (the earlier repair artifacts) must be dropped.
+ *
+ * Returns the splice when the log has EXACTLY this shape — a single seq drop
+ * to an already-committed value, an island whose first line starts at the
+ * dropped seq and whose last line ends at the committed prefix's last seq, and
+ * a fully contiguous, strictly longer suffix. Every other corruption (a
+ * forward gap, an unparsable row, a misaligned island, a broken suffix) is not
+ * this recoverable pattern and returns `undefined`, so callers keep the loud
+ * refusal.
+ *
+ * @param plaintext - the log's decoded JSONL text (header line first).
+ * @returns the splice repair target, or `undefined` when the pattern does not apply.
+ */
+export function findOverlapSplice(plaintext: string): OverlapSplice | undefined {
+  const lines = plaintext.split('\n')
+  if (lines.length < 3) return undefined
+  // Byte offset of every line start (line 0 is the header). Byte lengths, not
+  // UTF-16 code-unit lengths: a non-ASCII record would skew every later offset.
+  const starts: number[] = [0]
+  let offset = 0
+  for (let i = 0; i < lines.length - 1; i++) {
+    offset += Buffer.byteLength(lines[i] ?? '', 'utf8') + 1
+    starts.push(offset)
+  }
+
+  const prefix: SessionEvent[] = []
+  // Contiguous seq range of every committed event line, for island location.
+  const ranges: Array<{ from: number; to: number; line: number }> = []
+  let expected = 0
+
+  const decodeRow = (line: string): SessionEvent[] | undefined => {
+    if (line.length === 0) return undefined
+    try {
+      const row = decodeStorageRecord(JSON.parse(line))
+      return row.length === 0 ? undefined : row
+    } catch {
+      return undefined
+    }
+  }
+  const rowContiguous = (row: readonly SessionEvent[]): boolean => {
+    for (let k = 1; k < row.length; k++) {
+      const prev = row[k - 1]
+      const cur = row[k]
+      if (prev === undefined || cur === undefined || cur.seq !== prev.seq + 1) return false
+    }
+    return true
+  }
+
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i]
+    if (line === undefined || line.length === 0) continue // the split's trailing empty element is not a record
+    const row = decodeRow(line)
+    if (row === undefined || !rowContiguous(row)) return undefined
+    const first = row[0]
+    const last = row[row.length - 1]
+    if (first === undefined || last === undefined) return undefined
+    if (first.seq !== expected) {
+      const dropped = first.seq
+      if (dropped > expected || dropped < 1) return undefined // forward gap: missing data, not a replay
+      if (dropped > prefix.length) return undefined // drop beyond the committed prefix: not this pattern
+      // The suffix from this line must be fully contiguous to the end.
+      let suffixExpected = last.seq + 1
+      for (let j = i + 1; j < lines.length; j++) {
+        const suffixLine = lines[j]
+        if (suffixLine === undefined || suffixLine.length === 0) continue
+        const suffixRow = decodeRow(suffixLine)
+        if (suffixRow === undefined || !rowContiguous(suffixRow)) return undefined
+        const suffixFirst = suffixRow[0]
+        const suffixLast = suffixRow[suffixRow.length - 1]
+        if (suffixFirst === undefined || suffixLast === undefined) return undefined
+        if (suffixFirst.seq !== suffixExpected) return undefined
+        suffixExpected = suffixLast.seq + 1
+      }
+      // The continuation must strictly outlive the committed prefix it replays;
+      // an exact duplicate tail is an ambiguous re-append, not this repair.
+      if (suffixExpected <= expected) return undefined
+      // The island starts at the first committed line whose range covers the
+      // dropped seq, and must align exactly with the replayed range.
+      const islandIndex = ranges.findIndex(range => range.from <= dropped && dropped <= range.to)
+      const island = islandIndex === -1 ? undefined : ranges[islandIndex]
+      const lastRange = ranges.at(-1)
+      if (island === undefined || lastRange === undefined) return undefined
+      if (island.from !== dropped) return undefined
+      if (lastRange.to !== expected - 1) return undefined
+      if (island.line >= i) return undefined
+      // All lines between the island's first line and the drop line must be
+      // inside the replayed range (one contiguous island).
+      for (let r = islandIndex + 1; r < ranges.length; r++) {
+        const prev = ranges[r - 1]
+        const cur = ranges[r]
+        if (prev === undefined || cur === undefined) return undefined
+        if (cur.line >= i) return undefined
+        if (cur.from !== prev.to + 1) return undefined
+      }
+      const fromByte = starts[island.line]
+      const toByte = starts[i]
+      if (fromByte === undefined || toByte === undefined) return undefined
+      return {
+        fromByte,
+        toByte,
+        events: [
+          ...prefix.slice(0, dropped),
+          ...row,
+          ...collectSuffix(lines, i + 1, decodeRow),
+        ],
+      }
+    }
+    for (const event of row) prefix.push(event)
+    ranges.push({ from: first.seq, to: last.seq, line: i })
+    expected = last.seq + 1
+  }
+  return undefined
+}
+
+/** Collect the decoded continuation rows after the drop line. */
+function collectSuffix(
+  lines: readonly string[],
+  from: number,
+  decodeRow: (line: string) => SessionEvent[] | undefined,
+): SessionEvent[] {
+  const events: SessionEvent[] = []
+  for (let j = from; j < lines.length; j++) {
+    const line = lines[j]
+    if (line === undefined) continue
+    const row = decodeRow(line)
+    if (row !== undefined) for (const event of row) events.push(event)
+  }
+  return events
+}
+
+/**
  * Parse just the header line of a log into a {@link SessionHeader}, or
  * `undefined` if it is missing/not a header. Used by `list()` to read session
  * metadata WITHOUT parsing the whole log: a session picker scales with the

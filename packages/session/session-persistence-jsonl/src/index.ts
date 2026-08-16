@@ -23,9 +23,9 @@ import {
 } from '@deepseek-ai/dsh-session-persistence'
 import type { SessionEvent, SessionId, SessionHeader, SessionPreparation } from '@deepseek-ai/dsh-session'
 import {
-  encodeSegment, eventLines, logPath, logSuffix, parseHeaderMeta, projectDir, scanLog, sessionDir,
-  SessionLogScanner, toHeaderLine,
-  type JsonlCompression,
+  encodeSegment, eventLines, findOverlapSplice, logPath, logSuffix, parseHeaderMeta, projectDir, scanLog,
+  sessionDir, SessionLogScanner, toHeaderLine,
+  type JsonlCompression, type OverlapSplice,
 } from './format.ts'
 import {
   compressZstdFrame, createZstdFrameDecoder, decompressZstdFrame, decompressZstdPrefix, scanZstdFrames,
@@ -82,11 +82,23 @@ export interface Config {
   writeBatchMaxDelayMs?: number
 }
 
-/** Opaque coordinator token for replacing bytes recovered from a torn frame. */
-interface JsonlTornMarker {
-  truncateTo: number
-  recoveredEvents: SessionEvent[]
-}
+/**
+ * Opaque coordinator token for replacing bytes recovered from a torn frame or
+ * from the resume-race overlap corruption. A splice marker drops the spurious
+ * repair island between the committed prefix and the authoritative
+ * continuation; the offsets are plaintext byte bounds (whole lines).
+ */
+type JsonlTornMarker =
+  | {
+    truncateTo: number
+    recoveredEvents: SessionEvent[]
+    splice?: undefined
+  }
+  | {
+    splice: { fromByte: number; toByte: number }
+    recoveredEvents: SessionEvent[]
+    truncateTo?: undefined
+  }
 
 interface FileRevisionIdentity {
   readonly dev: bigint
@@ -336,12 +348,63 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
       if (error instanceof SessionFormatUnsupportedError && error.location === undefined) {
         throw new SessionFormatUnsupportedError(`${error.message} (raw log: ${path})`, { kind: 'jsonl', path })
       }
+      // The resume-race overlap corruption: repair it transparently instead of
+      // refusing the whole log. The scanner rejects the shape once a committed
+      // turn/end follows the replayed island; the splice analysis then
+      // reconstructs the authoritative continuation.
+      if (String(error).includes('seq gap in committed region')) {
+        const recovered = await this.overlapSpliceOf(buffer, signal)
+        if (recovered !== undefined) {
+          const { meta, splice } = recovered
+          prefix = {
+            meta,
+            events: splice.events,
+            tornMarker: { splice: { fromByte: splice.fromByte, toByte: splice.toByte }, recoveredEvents: [] },
+          }
+          signal?.throwIfAborted()
+          await this.assertStoredIdentity(path, meta, expectedId, signal)
+          signal?.throwIfAborted()
+          return { ...prefix, revision }
+        }
+      }
       throw error
     }
     signal?.throwIfAborted()
     await this.assertStoredIdentity(path, prefix.meta, expectedId, signal)
     signal?.throwIfAborted()
     return { ...prefix, revision }
+  }
+
+  /** Decode the artifact's complete plaintext (all complete frames concatenated). */
+  private async plaintextOf(buffer: Buffer, signal?: AbortSignal): Promise<string> {
+    if (this.compression !== 'zstd') return buffer.toString('utf8')
+    const { frames } = scanZstdFrames(buffer)
+    const plaintexts: Buffer[] = []
+    for (const frame of frames) {
+      signal?.throwIfAborted()
+      plaintexts.push(await decompressZstdFrame(buffer.subarray(frame.start, frame.end)))
+    }
+    return Buffer.concat(plaintexts).toString('utf8')
+  }
+
+  /**
+   * Detect the resume-race overlap corruption and reconstruct the
+   * authoritative continuation. Returns the spliced event log and the
+   * plaintext byte bounds of the spurious repair island to drop, or
+   * `undefined` when the log does not have that exact recoverable shape.
+   */
+  private async overlapSpliceOf(
+    buffer: Buffer,
+    signal?: AbortSignal,
+  ): Promise<{ meta: SessionHeader; splice: OverlapSplice } | undefined> {
+    signal?.throwIfAborted()
+    const plaintext = await this.plaintextOf(buffer, signal)
+    signal?.throwIfAborted()
+    const meta = parseHeaderMeta(plaintext.split('\n', 1)[0] as string)
+    if (meta === undefined) return undefined
+    const splice = findOverlapSplice(plaintext)
+    if (splice === undefined) return undefined
+    return { meta, splice }
   }
 
   /** Decode complete frames and retain complete JSONL records from a torn final frame. */
@@ -429,16 +492,20 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
   }
 
   /**
-   * Make a crash repair durable: truncate a torn tail, restore complete events
-   * decoded from it, then append synthetic closers. Two fsync'd steps — the seam
-   * does not require this to be atomic.
+   * Make a crash repair durable: truncate a torn tail or splice out a replayed
+   * repair island, restore complete events, then append synthetic closers. Two
+   * fsync'd steps — the seam does not require this to be atomic.
    */
   async commitRepair(
     meta: SessionHeader,
     tornMarker: JsonlTornMarker | undefined,
     closers: readonly SessionEvent[],
   ): Promise<void> {
-    if (tornMarker !== undefined) await this.repair(meta, tornMarker.truncateTo)
+    if (tornMarker !== undefined && tornMarker.splice !== undefined) {
+      await this.spliceRepair(meta, tornMarker.splice.fromByte, tornMarker.splice.toByte)
+    } else if (tornMarker !== undefined) {
+      await this.repair(meta, tornMarker.truncateTo)
+    }
     const repairedEvents = [...(tornMarker?.recoveredEvents ?? []), ...closers]
     if (repairedEvents.length > 0) await this.appendLines(meta, repairedEvents)
   }
@@ -694,6 +761,68 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
     await truncate(path, offset)
     const handle = await open(path, 'r+')
     try {
+      await handle.sync()
+    } finally {
+      await handle.close()
+    }
+  }
+
+  /**
+   * Remove the spurious repair island `[fromByte, toByte)` (plaintext whole
+   * lines) from the artifact and fsync. For zstd, the island is mapped back to
+   * raw frame bytes: bytes before the island's first frame and after its last
+   * frame are kept verbatim, and the affected frames' plaintext is re-encoded
+   * as one replacement frame (the reader is layout-blind to frame structure).
+   */
+  private async spliceRepair(meta: SessionHeader, fromByte: number, toByte: number): Promise<void> {
+    const path = logPath(this.root, meta.cwd, meta.id, this.compression)
+    const buffer = await readFile(path)
+    let spliced: Buffer
+    if (this.compression === 'zstd') {
+      const { frames } = scanZstdFrames(buffer)
+      const plaintexts: Buffer[] = []
+      for (const frame of frames) plaintexts.push(await decompressZstdFrame(buffer.subarray(frame.start, frame.end)))
+      const offsets: number[] = []
+      let total = 0
+      for (const text of plaintexts) {
+        offsets.push(total)
+        total += text.length
+      }
+      // The island's byte range must be covered by complete frames: the first
+      // frame STRICTLY containing the island's start (a start on a frame
+      // boundary belongs to that next frame), and the last frame whose content
+      // begins before the island's end.
+      const firstFrame = offsets.findIndex((start, index) => {
+        const text = plaintexts[index]
+        return text !== undefined && fromByte >= start && fromByte < start + text.length
+      })
+      const lastFrame = offsets.reduce((acc, start, index) => (start < toByte ? index : acc), -1)
+      const firstFrameRange = firstFrame === -1 ? undefined : frames[firstFrame]
+      const lastFrameRange = lastFrame === -1 ? undefined : frames[lastFrame]
+      const affectedStart = firstFrame === -1 ? undefined : offsets[firstFrame]
+      if (firstFrameRange === undefined || lastFrameRange === undefined || affectedStart === undefined
+        || lastFrame < firstFrame) {
+        throw new Error(`corrupt Zstandard session log: overlap splice ${fromByte}-${toByte} is not frame-aligned`)
+      }
+      const affected = Buffer.concat(plaintexts.slice(firstFrame, lastFrame + 1))
+      const prefixRaw = buffer.subarray(0, firstFrameRange.start)
+      const suffixRaw = buffer.subarray(lastFrameRange.end)
+      const newAffected = Buffer.concat([
+        affected.subarray(0, fromByte - affectedStart),
+        affected.subarray(toByte - affectedStart),
+      ])
+      if (newAffected.length === 0) {
+        spliced = Buffer.concat([prefixRaw, suffixRaw])
+      } else {
+        spliced = Buffer.concat([prefixRaw, await compressZstdFrame(newAffected), suffixRaw])
+      }
+    } else {
+      spliced = Buffer.concat([buffer.subarray(0, fromByte), buffer.subarray(toByte)])
+    }
+    const handle = await open(path, 'r+')
+    try {
+      await handle.writeFile(spliced)
+      await handle.truncate(spliced.length)
       await handle.sync()
     } finally {
       await handle.close()

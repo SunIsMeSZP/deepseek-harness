@@ -4,12 +4,14 @@ import { Context } from '@deepseek-ai/cordis'
 import { appendFile, mkdtemp, mkdir, rm, readFile, writeFile, readdir, stat, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
-import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
+import SessionStore, { SessionId, packChunkRuns } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent, SessionHeader } from '@deepseek-ai/dsh-session'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import {
-  encodeSegment, eventLines, logPath, projectDir, projectKey, scanLog, sessionDir, SessionLogScanner, toHeaderLine,
+  encodeSegment, eventLines, findOverlapSplice, logPath, projectDir, projectKey, scanLog, sessionDir,
+  SessionLogScanner, toHeaderLine,
 } from '../src/format.ts'
+import { compressZstdFrame, decompressZstdFrame, scanZstdFrames } from '../src/zstd.ts'
 import { runPersistenceContract, meta, oneTurnLog, appendLog } from '../../session-persistence/tests/contract.ts'
 import { runCoordinatorContract, type CoordinatorFixture } from '../../session-persistence/tests/coordinator-contract.ts'
 
@@ -1009,6 +1011,202 @@ describe('JsonlSessionPersistence: scanLog unit', () => {
     ].join('\n') + '\n'
     const { events } = scanLog(Buffer.from(log))
     expect(events.map(e => e.seq)).toEqual([0, 1]) // tail dropped
+  })
+})
+
+describe('resume-race overlap repair', () => {
+  /** Three regions of a log corrupted by the resume race: a committed prefix,
+   * a spurious repair island (closers + end-seed), and the authoritative
+   * continuation that replays the island's seqs. */
+  function overlapRegions(): { prefix: string[]; island: string[]; continuation: string[] } {
+    return {
+      prefix: [
+        JSON.stringify({ type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } }),
+        JSON.stringify({ type: 'step/start', seq: 1, time: 2, data: { turn: 1, step: 1 } }),
+      ],
+      island: [
+        JSON.stringify({ type: 'step/end', seq: 2, time: 2, data: { turn: 1, step: 1 } }),
+        JSON.stringify({ type: 'turn/end', seq: 3, time: 2, data: { turn: 1, reason: { kind: 'interrupted' } } }),
+        JSON.stringify({ type: 'session/end-seed', seq: 4, time: 3, data: {} }),
+      ],
+      continuation: [
+        JSON.stringify({ type: 'assistant/chunk', seq: 2, time: 4, data: { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'x' } } }),
+        JSON.stringify({ type: 'assistant/chunk', seq: 3, time: 4, data: { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'y' } } }),
+        JSON.stringify({ type: 'step/end', seq: 4, time: 5, data: { turn: 1, step: 1 } }),
+        JSON.stringify({ type: 'turn/end', seq: 5, time: 6, data: { turn: 1, reason: { kind: 'completed' } } }),
+      ],
+    }
+  }
+
+  async function mount(rootDir: string, compression: 'none' | 'zstd'): Promise<Context> {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(JsonlSessionPersistence, { root: rootDir, compression })
+    return ctx
+  }
+
+  it('findOverlapSplice computes byte-accurate bounds across non-ASCII records', () => {
+    const { prefix, island, continuation } = overlapRegions()
+    const header = JSON.stringify(toHeaderLine(meta('overlap-unicode')))
+    // A multi-byte UTF-8 record in the prefix must not skew the byte offsets.
+    const unicode = JSON.stringify({
+      type: 'assistant/chunk', seq: 0, time: 1,
+      data: { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: '你好世界' } },
+    })
+    const plaintext = [
+      header,
+      unicode,
+      ...prefix.slice(1), // step/start seq 1
+      ...island,
+      ...continuation,
+    ].join('\n') + '\n'
+    const splice = findOverlapSplice(plaintext)
+    expect(splice).toBeDefined()
+    const fromByte = Buffer.byteLength(`${header}\n${unicode}\n${prefix[1]}\n`, 'utf8')
+    expect(splice!.fromByte).toBe(fromByte)
+    expect(splice!.toByte).toBe(fromByte + Buffer.byteLength(`${island.join('\n')}\n`, 'utf8'))
+    expect(splice!.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5])
+  })
+
+  it('findOverlapSplice recovers the authoritative continuation and the island byte bounds', () => {
+    const { prefix, island, continuation } = overlapRegions()
+    const header = JSON.stringify(toHeaderLine(meta('overlap-1')))
+    const plaintext = [header, ...prefix, ...island, ...continuation].join('\n') + '\n'
+    const splice = findOverlapSplice(plaintext)
+    expect(splice).toBeDefined()
+    const fromByte = Buffer.byteLength(`${header}\n${prefix.join('\n')}\n`, 'utf8')
+    expect(splice!.fromByte).toBe(fromByte)
+    expect(splice!.toByte).toBe(fromByte + Buffer.byteLength(`${island.join('\n')}\n`, 'utf8'))
+    expect(splice!.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5])
+    expect(splice!.events.map(e => e.type)).toEqual([
+      'turn/start', 'step/start', 'assistant/chunk', 'assistant/chunk', 'step/end', 'turn/end',
+    ])
+  })
+
+  it('does not splice a forward seq gap (missing committed data)', () => {
+    const header = JSON.stringify(toHeaderLine(meta('forward-gap')))
+    const plaintext = [
+      header,
+      JSON.stringify({ type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } }),
+      JSON.stringify({ type: 'turn/end', seq: 9, time: 2, data: { turn: 1, reason: { kind: 'completed' } } }),
+    ].join('\n') + '\n'
+    expect(findOverlapSplice(plaintext)).toBeUndefined()
+  })
+
+  it('does not splice a non-contiguous continuation suffix', () => {
+    const { prefix, island } = overlapRegions()
+    const header = JSON.stringify(toHeaderLine(meta('broken-suffix')))
+    const plaintext = [
+      header,
+      ...prefix,
+      ...island,
+      JSON.stringify({ type: 'assistant/chunk', seq: 2, time: 4, data: { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'x' } } }),
+      JSON.stringify({ type: 'assistant/chunk', seq: 7, time: 5, data: { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'y' } } }),
+    ].join('\n') + '\n'
+    expect(findOverlapSplice(plaintext)).toBeUndefined()
+  })
+
+  it('does not splice a misaligned island (its first line covers earlier seqs)', () => {
+    const header = JSON.stringify(toHeaderLine(meta('misaligned')))
+    // One packed line covers seqs 0-1, so the first line containing the
+    // replayed seq 1 starts before it — the island is not line-aligned.
+    const packed = JSON.stringify(packChunkRuns([
+      { type: 'assistant/chunk', seq: 0, time: 1, data: { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'a' } } },
+      { type: 'assistant/chunk', seq: 1, time: 1, data: { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'b' } } },
+    ])[0])
+    const plaintext = [
+      header,
+      packed,
+      JSON.stringify({ type: 'step/end', seq: 2, time: 2, data: { turn: 1, step: 1 } }),
+      JSON.stringify({ type: 'assistant/chunk', seq: 1, time: 3, data: { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'c' } } }),
+      JSON.stringify({ type: 'assistant/chunk', seq: 2, time: 3, data: { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'd' } } }),
+      JSON.stringify({ type: 'step/end', seq: 3, time: 4, data: { turn: 1, step: 1 } }),
+      JSON.stringify({ type: 'turn/end', seq: 4, time: 5, data: { turn: 1, reason: { kind: 'completed' } } }),
+    ].join('\n') + '\n'
+    expect(findOverlapSplice(plaintext)).toBeUndefined()
+  })
+
+  it('does not splice an exact duplicate tail (ambiguous re-append)', () => {
+    const header = JSON.stringify(toHeaderLine(meta('duplicate-tail')))
+    const plaintext = [
+      header,
+      JSON.stringify({ type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } }),
+      JSON.stringify({ type: 'step/start', seq: 1, time: 2, data: { turn: 1, step: 1 } }),
+      // island
+      JSON.stringify({ type: 'step/end', seq: 2, time: 2, data: { turn: 1, step: 1 } }),
+      JSON.stringify({ type: 'turn/end', seq: 3, time: 2, data: { turn: 1, reason: { kind: 'interrupted' } } }),
+      // suffix replays exactly the island and ends there: not provably longer
+      JSON.stringify({ type: 'assistant/chunk', seq: 2, time: 4, data: { turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'x' } } }),
+      JSON.stringify({ type: 'step/end', seq: 3, time: 5, data: { turn: 1, step: 1 } }),
+    ].join('\n') + '\n'
+    expect(findOverlapSplice(plaintext)).toBeUndefined()
+  })
+
+  it('load() splices the overlap and durably repairs the plaintext artifact', async () => {
+    const dir = await freshRoot()
+    const ctx = await mount(dir, 'none')
+    const id = SessionId('overlap-plain')
+    const { prefix, island, continuation } = overlapRegions()
+    const body = [JSON.stringify(toHeaderLine(meta(id))), ...prefix, ...island, ...continuation].join('\n') + '\n'
+    await mkdir(dirname(rawLogPath(dir, undefined, id)), { recursive: true })
+    await writeFile(rawLogPath(dir, undefined, id), body)
+
+    const loaded = await ctx.sessionPersistence.load(id)
+    expect(loaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5])
+    // The artifact is durably repaired: the repair island is gone.
+    const repaired = await readFile(rawLogPath(dir, undefined, id), 'utf8')
+    expect(repaired).not.toContain('interrupted')
+    expect(repaired).not.toContain('session/end-seed')
+    await ctx.fiber.dispose()
+  })
+
+  it('load() repairs a zstd artifact whose island occupies whole frames', async () => {
+    const dir = await freshRoot()
+    const ctx = await mount(dir, 'zstd')
+    const id = SessionId('overlap-zstd')
+    const { prefix, island, continuation } = overlapRegions()
+    const headerFrame = await compressZstdFrame(`${JSON.stringify(toHeaderLine(meta(id)))}\n`)
+    const prefixFrame = await compressZstdFrame(`${prefix.join('\n')}\n`)
+    const islandFrame = await compressZstdFrame(`${island.join('\n')}\n`)
+    const continuationFrame = await compressZstdFrame(`${continuation.join('\n')}\n`)
+    const path = logPath(dir, undefined, id, 'zstd')
+    await mkdir(dirname(path), { recursive: true })
+    await writeFile(path, Buffer.concat([headerFrame, prefixFrame, islandFrame, continuationFrame]))
+
+    const loaded = await ctx.sessionPersistence.load(id)
+    expect(loaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5])
+    const repaired = await readFile(path)
+    const { frames } = scanZstdFrames(repaired)
+    const plaintexts: Buffer[] = []
+    for (const frame of frames) plaintexts.push(await decompressZstdFrame(repaired.subarray(frame.start, frame.end)))
+    const text = Buffer.concat(plaintexts).toString('utf8')
+    expect(text).not.toContain('interrupted')
+    expect(text).not.toContain('session/end-seed')
+    await ctx.fiber.dispose()
+  })
+
+  it('load() repairs a zstd artifact whose island shares a frame with the continuation', async () => {
+    const dir = await freshRoot()
+    const ctx = await mount(dir, 'zstd')
+    const id = SessionId('overlap-zstd-mixed')
+    const { prefix, island, continuation } = overlapRegions()
+    const headerFrame = await compressZstdFrame(`${JSON.stringify(toHeaderLine(meta(id)))}\n`)
+    const prefixFrame = await compressZstdFrame(`${prefix.join('\n')}\n`)
+    const mixedFrame = await compressZstdFrame(`${[...island, ...continuation].join('\n')}\n`)
+    const path = logPath(dir, undefined, id, 'zstd')
+    await mkdir(dirname(path), { recursive: true })
+    await writeFile(path, Buffer.concat([headerFrame, prefixFrame, mixedFrame]))
+
+    const loaded = await ctx.sessionPersistence.load(id)
+    expect(loaded.events.map(e => e.seq)).toEqual([0, 1, 2, 3, 4, 5])
+    const repaired = await readFile(path)
+    const { frames } = scanZstdFrames(repaired)
+    const plaintexts: Buffer[] = []
+    for (const frame of frames) plaintexts.push(await decompressZstdFrame(repaired.subarray(frame.start, frame.end)))
+    const text = Buffer.concat(plaintexts).toString('utf8')
+    expect(text).not.toContain('interrupted')
+    expect(text).toContain('assistant/chunk')
+    await ctx.fiber.dispose()
   })
 })
 
