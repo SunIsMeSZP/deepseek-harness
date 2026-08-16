@@ -113,6 +113,14 @@
         "zod"
       ]
     },
+    "packages/extensions/tool-playwright-debug": {
+      "entry": [
+        "src/**/*.ts"
+      ],
+      "project": [
+        "src/**/*.ts"
+      ]
+    },
     "packages/host/directory-picker-native": {
       "entry": [
         "tests/**/*.spec.{ts,tsx}",
