@@ -14,10 +14,10 @@ import { dirname, join, sep } from 'node:path'
 export const PLUGIN_TYPES = ['host', 'client', 'dual-half', 'mcp'] as const
 
 /** Valid `dsh.plugin.mount` values. */
-export const PLUGIN_MOUNTS = ['static', 'dynamic'] as const
+const PLUGIN_MOUNTS = ['static', 'dynamic'] as const
 
 /** The `dsh.plugin` object read from a package.json, before validation. */
-export interface RawPluginManifest {
+interface RawPluginManifest {
   type?: unknown
   mount?: unknown
   name?: unknown

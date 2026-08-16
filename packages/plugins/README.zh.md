@@ -12,5 +12,11 @@
 | [`aggregate.cordis.yml`](aggregate.cordis.yml) | 生成的 include 链，逐条指向各注册插件自带的 `cordis.yml` 片段（`pnpm run plugin:assemble` 生成；由 `pnpm run plugin:assemble:check` 校验新鲜度） |
 | `<name>/` | 单个插件包，由 `pnpm run plugin:scaffold <name> --type host\|client\|dual-half\|mcp` 脚手架生成 |
 
+## 包
+
+| 包 | 职责 | 工具 |
+|---|---|---|
+| [`clock/`](clock/README.md) | 面向模型的 IANA 时区挂钟读数 | `clock` |
+
 清单形态由 `pnpm run plugin:verify`（`hygiene` 的一部分）校验；`consumes`
 的服务解析仍以 cordis 启动为权威。设计出处：[插件工程层 Agent Note](../../.agents/notes/proposed/process/2026-08-17-plugin-engineering-layer.md)。

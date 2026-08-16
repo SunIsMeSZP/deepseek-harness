@@ -65,8 +65,9 @@ export function readRegistry(repoRoot: string): RegistryContents {
 }
 
 /**
- * Render the aggregate include chain in registry order. An empty registry
- * renders an empty plugin list so the file stays a valid cordis overlay.
+ * Render the aggregate include chain in registry order as a Loader entry
+ * array, the form verify-cordis-config scans repository-wide. An empty
+ * registry renders an empty array so the file stays a valid overlay.
  * @param plugins - registered plugin names.
  * @returns the aggregate cordis.yml text.
  */
@@ -76,14 +77,14 @@ export function renderAggregate(plugins: readonly string[]): string {
     '# Regenerate: pnpm run plugin:assemble — verify: pnpm run plugin:assemble:check',
   ]
   if (plugins.length === 0) {
-    lines.push('plugins: []')
+    lines.push('[]')
   } else {
-    lines.push('plugins:')
     for (const name of plugins) {
       lines.push(
-        "  - name: '@deepseek-ai/cordis-plugin-include'",
-        '    config:',
-        `      path: ./${name}/cordis.yml`,
+        `- id: include-${name}`,
+        "  name: '@deepseek-ai/cordis-plugin-include'",
+        '  config:',
+        `    path: ./${name}/cordis.yml`,
       )
     }
   }
@@ -91,12 +92,14 @@ export function renderAggregate(plugins: readonly string[]): string {
 }
 
 /**
- * Check the registry against discovery in both directions and compare the
- * committed aggregate with its rendering.
+ * Check the registry against discovery in both directions. Membership is the
+ * closed-inventory invariant both the write and check paths enforce; the
+ * write path regenerates the aggregate, so freshness is the check path's
+ * concern alone.
  * @param repoRoot - repository root.
- * @returns membership and freshness violations; empty when the registry conforms.
+ * @returns membership violations; empty when every manifest is registered once.
  */
-export function checkRegistry(repoRoot: string): RegistryViolation[] {
+export function checkRegistryMembership(repoRoot: string): RegistryViolation[] {
   let registry: RegistryContents
   try {
     registry = readRegistry(repoRoot)
@@ -129,6 +132,25 @@ export function checkRegistry(repoRoot: string): RegistryViolation[] {
       })
     }
   }
+  return violations
+}
+
+/**
+ * Full check-path verification: membership in both directions plus the
+ * committed aggregate's freshness.
+ * @param repoRoot - repository root.
+ * @returns membership and freshness violations; empty when the registry conforms.
+ */
+export function checkRegistry(repoRoot: string): RegistryViolation[] {
+  const violations = checkRegistryMembership(repoRoot)
+  let registry: RegistryContents
+  try {
+    registry = readRegistry(repoRoot)
+  } catch {
+    // The membership check already reported the unparsable registry; the
+    // freshness comparison has nothing to compare against.
+    return violations
+  }
   const aggregatePath = join(repoRoot, AGGREGATE_PATH)
   if (!existsSync(aggregatePath)) {
     violations.push({
@@ -156,7 +178,7 @@ const isMain = invokedPath !== undefined
   && import.meta.url === pathToFileURL(resolve(invokedPath)).href
 if (isMain) {
   const check = process.argv.includes('--check')
-  const violations = checkRegistry(root)
+  const violations = check ? checkRegistry(root) : checkRegistryMembership(root)
   if (violations.length > 0) {
     console.error(`assemble-registry: violations found:\n${formatRegistryViolations(violations)}`)
     process.exit(1)

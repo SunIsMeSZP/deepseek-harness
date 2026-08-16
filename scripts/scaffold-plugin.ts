@@ -180,10 +180,10 @@ function renderFragment(name: string): string {
   return `# Fragment for @deepseek-ai/dsh-${name}.
 # The generated packages/plugins/aggregate.cordis.yml includes this file once
 # the plugin is listed in packages/plugins/registry.json. To mount it
-# directly, add the entry below (plus config) to the app cordis.yml.
-plugins:
-  - name: '@deepseek-ai/dsh-${name}'
-    config: {}
+# directly, add this entry (plus config) to the app cordis.yml.
+- id: ${name}
+  name: '@deepseek-ai/dsh-${name}'
+  config: {}
 `
 }
 
