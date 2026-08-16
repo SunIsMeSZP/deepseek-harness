@@ -30,7 +30,7 @@ function renderPackageJson(name: string, type: PluginType): object {
   const hasSource = type !== 'mcp'
   const hasClient = type === 'client' || type === 'dual-half'
   return {
-    name: `@deepseek-ai/dsh-plugin-${name}`,
+    name: `@deepseek-ai/dsh-${name}`,
     description: `${name} — scaffold-generated DSH plugin; describe what it provides`,
     version: '0.1.0-rc.5',
     publishConfig: { access: 'public' },
@@ -102,7 +102,7 @@ function renderHostHalf(name: string): string {
  * Scaffold-generated host half. Replace the probe with the plugin's real
  * services, tools, and lifecycle effects; keep the function-plugin form.
  *
- * @module @deepseek-ai/dsh-plugin-${name}
+ * @module @deepseek-ai/dsh-${name}
  */
 
 import type { Context } from '@deepseek-ai/cordis'
@@ -136,7 +136,7 @@ function renderClientHalf(name: string): string {
  * Scaffold-generated browser half evaluated by the client runner. Replace
  * this default export with the real client-side plugin object.
  *
- * @module @deepseek-ai/dsh-plugin-${name}/client
+ * @module @deepseek-ai/dsh-${name}/client
  */
 
 export default {}
@@ -171,24 +171,24 @@ function renderSpec(name: string, type: PluginType): string {
 import { Context } from '@deepseek-ai/cordis'
 import * as plugin from '../src/index.ts'
 ${hasClient ? "import client from '../src/client.ts'\n" : ''}
-describe('@deepseek-ai/dsh-plugin-${name}', () => {
+describe('@deepseek-ai/dsh-${name}', () => {
 ${probe}${client}})
 `
 }
 
 function renderFragment(name: string): string {
-  return `# Fragment for @deepseek-ai/dsh-plugin-${name}.
+  return `# Fragment for @deepseek-ai/dsh-${name}.
 # The generated packages/plugins/aggregate.cordis.yml includes this file once
 # the plugin is listed in packages/plugins/registry.json. To mount it
 # directly, add the entry below (plus config) to the app cordis.yml.
 plugins:
-  - name: '@deepseek-ai/dsh-plugin-${name}'
+  - name: '@deepseek-ai/dsh-${name}'
     config: {}
 `
 }
 
 function renderReadme(name: string, type: PluginType): string {
-  return `# @deepseek-ai/dsh-plugin-${name}
+  return `# @deepseek-ai/dsh-${name}
 
 English | [中文](README.zh.md)
 
@@ -214,7 +214,7 @@ once the real capability replaces the scaffold probe.
 }
 
 function renderReadmeZh(name: string, type: PluginType): string {
-  return `# @deepseek-ai/dsh-plugin-${name}
+  return `# @deepseek-ai/dsh-${name}
 
 [English](README.md) | 中文
 

@@ -11,8 +11,8 @@ import {
 } from './plugin-manifests.ts'
 
 const root = resolve(import.meta.dirname, '..')
-const { records, violations } = discoverPluginRecords(root)
-const all = [...violations, ...verifyPluginRecords(records, root)]
+const { records, violations, packageNames } = discoverPluginRecords(root)
+const all = [...violations, ...verifyPluginRecords(records, root, packageNames)]
 
 if (all.length > 0) {
   console.error('verify-plugin-manifests: violations found:')

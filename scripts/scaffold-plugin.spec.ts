@@ -18,8 +18,8 @@ afterEach(() => {
 })
 
 function verifyScaffolded(root: string): string[] {
-  const { records, violations } = discoverPluginRecords(root)
-  return [...violations, ...verifyPluginRecords(records, root)]
+  const { records, violations, packageNames } = discoverPluginRecords(root)
+  return [...violations, ...verifyPluginRecords(records, root, packageNames)]
     .map(violation => `${violation.path}: ${violation.message}`)
 }
 
@@ -69,7 +69,7 @@ describe('scaffoldPlugin', () => {
     const root = fixtureRoot()
     scaffoldPlugin(root, 'demo-notes', 'host')
     const fragment = readFileSync(join(root, 'packages/plugins/demo-notes/cordis.yml'), 'utf8')
-    expect(fragment).toContain("name: '@deepseek-ai/dsh-plugin-demo-notes'")
+    expect(fragment).toContain("name: '@deepseek-ai/dsh-demo-notes'")
     const readme = readFileSync(join(root, 'packages/plugins/demo-notes/README.md'), 'utf8')
     expect(readme).toContain('## Model Experience')
     expect(readme).toContain('## Known Limitations and Deferred Work')

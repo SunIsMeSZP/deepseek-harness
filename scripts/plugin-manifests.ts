@@ -38,6 +38,9 @@ export interface PluginRecord {
   packageJson: { name?: string; dsh?: { client?: { platform?: string } } }
 }
 
+/** Every workspace package name mapped to its directory, for collision checks. */
+export type PackageNameMap = Map<string, string>
+
 /** One manifest problem, addressed by repository-relative path. */
 export interface ManifestViolation {
   path: string
@@ -78,15 +81,21 @@ function isPluginManifestObject(value: unknown): value is RawPluginManifest {
  * `dsh.plugin`, plus plugins-group members that fail to. JSON problems and
  * missing declarations surface as discovery violations rather than records.
  * @param root - repository root the package globs resolve against.
- * @returns discovered records and discovery-level violations.
+ * @returns discovered records, discovery-level violations, and the full
+ *   package-name map for collision checks.
  */
 export function discoverPluginRecords(root: string): {
   records: PluginRecord[]
   violations: ManifestViolation[]
+  packageNames: PackageNameMap
 } {
   const records: PluginRecord[] = []
   const violations: ManifestViolation[] = []
-  for (const pkgPath of globSync('packages/*/*/package.json', { cwd: root }).sort()) {
+  const packageNames: PackageNameMap = new Map()
+  for (const pkgPath of [
+    ...globSync('packages/*/*/package.json', { cwd: root }),
+    ...globSync('apps/*/package.json', { cwd: root }),
+  ].sort()) {
     const normalized = pkgPath.split(sep).join('/')
     const dir = dirname(normalized)
     let packageJson: PluginRecord['packageJson']
@@ -98,6 +107,9 @@ export function discoverPluginRecords(root: string): {
         message: `package.json is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
       })
       continue
+    }
+    if (packageJson.name !== undefined && !packageNames.has(packageJson.name)) {
+      packageNames.set(packageJson.name, dir)
     }
     const manifest = (packageJson as { dsh?: { plugin?: unknown } }).dsh?.plugin
     if (manifest === undefined) {
@@ -118,7 +130,7 @@ export function discoverPluginRecords(root: string): {
     }
     records.push({ dir, manifest, packageJson })
   }
-  return { records, violations }
+  return { records, violations, packageNames }
 }
 
 function verifyRecord(record: PluginRecord, root: string, violations: ManifestViolation[]): void {
@@ -129,8 +141,8 @@ function verifyRecord(record: PluginRecord, root: string, violations: ManifestVi
 
   if (typeof manifest.name !== 'string' || !PLUGIN_NAME_PATTERN.test(manifest.name)) {
     at('dsh.plugin.name must be a lowercase kebab-case string (letters, digits, hyphens)')
-  } else if (packageJson.name !== `@deepseek-ai/dsh-plugin-${manifest.name}`) {
-    at(`package.json name must be "@deepseek-ai/dsh-plugin-${manifest.name}" to match dsh.plugin.name`)
+  } else if (packageJson.name !== `@deepseek-ai/dsh-${manifest.name}`) {
+    at(`package.json name must be "@deepseek-ai/dsh-${manifest.name}" to match dsh.plugin.name`)
   }
 
   if (typeof manifest.type !== 'string' || !(PLUGIN_TYPES as readonly string[]).includes(manifest.type)) {
@@ -214,14 +226,21 @@ function verifyRecord(record: PluginRecord, root: string, violations: ManifestVi
 
 /**
  * Validate every discovered manifest. Name uniqueness is checked across the
- * full record set; the rest of the rules are per record.
+ * full record set, and the derived npm name against every workspace package;
+ * the rest of the rules are per record.
  * @param records - discovered plugin records.
  * @param root - repository root for source-file existence checks.
+ * @param packageNames - every workspace package name mapped to its directory.
  * @returns one violation per broken rule, empty when every manifest conforms.
  */
-export function verifyPluginRecords(records: readonly PluginRecord[], root: string): ManifestViolation[] {
+export function verifyPluginRecords(
+  records: readonly PluginRecord[],
+  root: string,
+  packageNames: ReadonlyMap<string, string>,
+): ManifestViolation[] {
   const violations: ManifestViolation[] = []
   const seen = new Map<string, string>()
+  const pluginDirs = new Set(records.map(record => record.dir))
   for (const record of records) {
     verifyRecord(record, root, violations)
     if (typeof record.manifest.name === 'string') {
@@ -233,6 +252,17 @@ export function verifyPluginRecords(records: readonly PluginRecord[], root: stri
         })
       } else {
         seen.set(record.manifest.name, record.dir)
+      }
+      if (PLUGIN_NAME_PATTERN.test(record.manifest.name)) {
+        const owner = packageNames.get(`@deepseek-ai/dsh-${record.manifest.name}`)
+        // Duplicate plugin names already report above; the collision rule
+        // guards the derived npm name against non-plugin packages only.
+        if (owner !== undefined && owner !== record.dir && !pluginDirs.has(owner)) {
+          violations.push({
+            path: manifestPath(record.dir),
+            message: `package name "@deepseek-ai/dsh-${record.manifest.name}" is already taken by ${owner}`,
+          })
+        }
       }
     }
   }

@@ -30,14 +30,14 @@ function writeFile(root: string, rel: string, content = ''): void {
 }
 
 function verify(root: string): string[] {
-  const { records, violations } = discoverPluginRecords(root)
-  return [...violations, ...verifyPluginRecords(records, root)]
+  const { records, violations, packageNames } = discoverPluginRecords(root)
+  return [...violations, ...verifyPluginRecords(records, root, packageNames)]
     .map(violation => `${violation.path}: ${violation.message}`)
 }
 
 function hostPackage(name: string): object {
   return {
-    name: `@deepseek-ai/dsh-plugin-${name}`,
+    name: `@deepseek-ai/dsh-${name}`,
     dsh: { plugin: { type: 'host', mount: 'static', name } },
   }
 }
@@ -52,7 +52,7 @@ describe('plugin manifest discovery', () => {
 
   it('flags a plugins-group package without a manifest', () => {
     const root = fixtureRoot()
-    writePkg(root, 'demo', { name: '@deepseek-ai/dsh-plugin-demo' })
+    writePkg(root, 'demo', { name: '@deepseek-ai/dsh-demo' })
     expect(verify(root)).toEqual([
       'packages/plugins/demo/package.json: a package in the plugins group must declare dsh.plugin',
     ])
@@ -79,7 +79,7 @@ describe('plugin manifest validation', () => {
   it('requires dsh.client with platform web on client plugins', () => {
     const root = fixtureRoot()
     writePkg(root, 'demo', {
-      name: '@deepseek-ai/dsh-plugin-demo',
+      name: '@deepseek-ai/dsh-demo',
       dsh: { plugin: { type: 'client', mount: 'static', name: 'demo' } },
     })
     writeFile(root, 'packages/plugins/demo/src/index.ts')
@@ -92,7 +92,7 @@ describe('plugin manifest validation', () => {
   it('requires an mcp block with a non-empty command on mcp plugins', () => {
     const root = fixtureRoot()
     writePkg(root, 'demo', {
-      name: '@deepseek-ai/dsh-plugin-demo',
+      name: '@deepseek-ai/dsh-demo',
       dsh: { plugin: { type: 'mcp', mount: 'static', name: 'demo', mcp: { command: [] } } },
     })
     expect(verify(root)).toEqual([
@@ -100,7 +100,7 @@ describe('plugin manifest validation', () => {
     ])
     const root2 = fixtureRoot()
     writePkg(root2, 'demo', {
-      name: '@deepseek-ai/dsh-plugin-demo',
+      name: '@deepseek-ai/dsh-demo',
       dsh: { plugin: { type: 'mcp', mount: 'static', name: 'demo' } },
     })
     expect(verify(root2)).toEqual([
@@ -111,7 +111,7 @@ describe('plugin manifest validation', () => {
   it('rejects trust on static mounts', () => {
     const root = fixtureRoot()
     writePkg(root, 'demo', {
-      name: '@deepseek-ai/dsh-plugin-demo',
+      name: '@deepseek-ai/dsh-demo',
       dsh: { plugin: { type: 'host', mount: 'static', name: 'demo', trust: { approval: 'required' } } },
     })
     writeFile(root, 'packages/plugins/demo/src/index.ts')
@@ -131,6 +131,16 @@ describe('plugin manifest validation', () => {
     ])
   })
 
+  it('rejects a derived npm name already owned by a non-plugin package', () => {
+    const root = fixtureRoot()
+    writePkg(root, 'demo', hostPackage('demo'))
+    writeFile(root, 'packages/plugins/demo/src/index.ts')
+    writeFile(root, 'packages/core/owned/package.json', JSON.stringify({ name: '@deepseek-ai/dsh-demo' }))
+    expect(verify(root)).toEqual([
+      'packages/plugins/demo/package.json: package name "@deepseek-ai/dsh-demo" is already taken by packages/core/owned',
+    ])
+  })
+
   it('enforces the package name derived from dsh.plugin.name', () => {
     const root = fixtureRoot()
     writePkg(root, 'demo', {
@@ -139,7 +149,7 @@ describe('plugin manifest validation', () => {
     })
     writeFile(root, 'packages/plugins/demo/src/index.ts')
     expect(verify(root)).toEqual([
-      'packages/plugins/demo/package.json: package.json name must be "@deepseek-ai/dsh-plugin-demo" to match dsh.plugin.name',
+      'packages/plugins/demo/package.json: package.json name must be "@deepseek-ai/dsh-demo" to match dsh.plugin.name',
     ])
   })
 
@@ -168,7 +178,7 @@ describe('plugin manifest validation', () => {
   it('accepts a conforming dual-half plugin', () => {
     const root = fixtureRoot()
     writePkg(root, 'demo', {
-      name: '@deepseek-ai/dsh-plugin-demo',
+      name: '@deepseek-ai/dsh-demo',
       dsh: {
         client: { inject: ['@deepseek-ai/dsh-client-runtime'], platform: 'web' },
         plugin: { type: 'dual-half', mount: 'dynamic', name: 'demo', provides: ['tool:demo'] },
