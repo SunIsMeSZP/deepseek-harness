@@ -65,6 +65,7 @@ import * as ToolRalph from '@deepseek-ai/dsh-tool-ralph'
 import * as ToolWorkflow from '@deepseek-ai/dsh-tool-workflow'
 import * as Clock from '@deepseek-ai/dsh-clock'
 import * as Weather from '@deepseek-ai/dsh-weather'
+import * as ToolPlaywrightDebug from '@deepseek-ai/dsh-tool-playwright-debug'
 import { githubSlug } from './verify-md-links.ts'
 
 /** Attachment seam marker that makes the attachments-conditional `read_image` schema harvestable. */
@@ -577,6 +578,18 @@ const TOOL_PACKAGES: ToolPackage[] = [
     },
     note:
       'The weather tool fetches current conditions through the web seam from a configurable forecast API; refusals carry WEATHER_LOCATION_REQUIRED, WEATHER_INVALID_COORDINATES, WEATHER_API_STATUS, and WEATHER_BAD_RESPONSE.',
+  },
+  {
+    pkg: '@deepseek-ai/dsh-tool-playwright-debug',
+    dir: 'tool-playwright-debug',
+    source: 'packages/extensions/tool-playwright-debug/src/index.ts',
+    requires: ['ctx.tools'],
+    writes: ['tool/call', 'tool/result'],
+    async mount(ctx) {
+      await ctx.plugin(ToolPlaywrightDebug)
+    },
+    note:
+      'playwright_web_debug drives a real browser through Playwright; launch/attach session state is process-local and screenshots land at the caller-provided path.',
   },
 ]
 

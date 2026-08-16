@@ -41,6 +41,7 @@ This table connects model-visible tool names to the plugin package and service s
 | `@deepseek-ai/dsh-tool-web` | `web_fetch`, `web_search` | `ctx.tools`, `ctx.web`, `ctx.systemPrompt` | `tool/call`, `tool/result` | - | web_search and web_fetch keep provider selection behind ctx.web so model-visible schemas stay stable across backend swaps. |
 | `@deepseek-ai/dsh-clock` | `clock` | `ctx.tools` | `tool/call`, `tool/result` | - | The clock tool reads the system clock in a configured or per-call IANA zone; invalid zones fail the call loud with CLOCK_INVALID_ZONE. |
 | `@deepseek-ai/dsh-weather` | `weather` | `ctx.tools`, `ctx.web` | `tool/call`, `tool/result` | - | The weather tool fetches current conditions through the web seam from a configurable forecast API; refusals carry WEATHER_LOCATION_REQUIRED, WEATHER_INVALID_COORDINATES, WEATHER_API_STATUS, and WEATHER_BAD_RESPONSE. |
+| `@deepseek-ai/dsh-tool-playwright-debug` | `playwright_web_debug` | `ctx.tools` | `tool/call`, `tool/result` | - | playwright_web_debug drives a real browser through Playwright; launch/attach session state is process-local and screenshots land at the caller-provided path. |
 
 <a id="deepseek-aidsh-tool-ask-user"></a>
 
@@ -1933,3 +1934,190 @@ Return the current weather at one coordinate pair: the Celsius temperature and t
 Source: [`packages/plugins/weather/src/index.ts`](../packages/plugins/weather/src/index.ts)
 
 The weather tool fetches current conditions through the web seam from a configurable forecast API; refusals carry WEATHER_LOCATION_REQUIRED, WEATHER_INVALID_COORDINATES, WEATHER_API_STATUS, and WEATHER_BAD_RESPONSE.
+
+<a id="deepseek-aidsh-tool-playwright-debug"></a>
+
+## `@deepseek-ai/dsh-tool-playwright-debug`
+
+### `playwright_web_debug`
+
+Launch or attach to a real browser with Playwright and debug web pages hands-on.
+Actions:
+- launch: start a browser instance (engine/channel come from row config browser/channel — default chromium via the installed Edge; args can override browser/channel/executablePath/headless/windowWidth/windowHeight). Opens a fresh default session; url is loaded best-effort (a failed start page is reported, not fatal).
+- attach: connect with chromium.connectOverCDP to an ALREADY-RUNNING browser on the configured cdpPort (start Edge/Chrome with --remote-debugging-port=9333). The external browser is never stopped; quit only detaches. The default session binds to its first non-internal page (edge://, chrome://, extensions are skipped).
+- status: mode (owned/attached), engine, and the session list.
+- pages: list every open page as id c<context>.p<page> with url/title and which session it is bound to.
+- bind: bind a named session (default 'default') to an existing page id from pages. The bound page is never closed by this tool.
+- open-page: create a fresh isolated context+page bound to a session name (default 'default'); optional url to open.
+- navigate: goto url (http:// auto-prefixed) and wait for waitUntil (default 'load').
+- reload / back / forward: the corresponding navigation with the same waitUntil choices.
+- eval: evaluate a JavaScript expression in the page (Playwright auto-awaits promises). With selector, the expression runs with `el` bound to the first matching element. Returns the JSON value, or a truncated preview when it exceeds maxResultChars; undefined/unserializable results are reported as such.
+- snapshot: accessibility tree (ariaSnapshot) of the body, or of the element matching selector. The best way to "see" a page: roles, names, and inputs. Bounded by maxChars.
+- click / fill / type / select: drive the first (or index-th) element matching selector with Playwright auto-waiting. fill sets an input's value; type presses keys one by one (delayMs optional); select picks a <select> option by value or, with by:'label', by visible label.
+- wait: wait for selector (state: attached/detached/visible/hidden, default visible), a url glob (waitForURL), a loadState (load/domcontentloaded/networkidle), or timeoutMs of wall-clock time. Exactly one of these is required.
+- console: buffered console messages + page errors for the session; clear:true flushes after reading.
+- network: buffered requests/responses (method, url, status, resourceType, failed) for the session; clear:true flushes after reading.
+- screenshot: capture the page (fullPage:true for the whole page) or an element (selector) as a PNG written to path (absolute path recommended, e.g. inside the session workspace) or a temp file; returns savedTo and bytes so you can read_image the file.
+- close-session: drop one named session. Sessions created by launch/open-page close their tab; sessions bound with bind/attach are only detached.
+- quit: owned mode terminates the browser; attached mode detaches only and leaves the external browser running.
+Usage: launch or attach once, then reuse the default session. One browser at a time; quit before launching a different engine.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "description": "What to do.",
+      "enum": [
+        "launch",
+        "attach",
+        "status",
+        "pages",
+        "bind",
+        "open-page",
+        "navigate",
+        "reload",
+        "back",
+        "forward",
+        "eval",
+        "snapshot",
+        "click",
+        "fill",
+        "type",
+        "select",
+        "wait",
+        "console",
+        "network",
+        "screenshot",
+        "close-session",
+        "quit"
+      ]
+    },
+    "url": {
+      "type": "string",
+      "description": "launch/open-page: start page. navigate: destination URL. wait: url glob to wait for."
+    },
+    "headless": {
+      "type": "boolean",
+      "description": "launch: run the browser headless (overrides the row config)."
+    },
+    "browser": {
+      "type": "string",
+      "description": "launch: engine override (chromium/firefox/webkit)."
+    },
+    "channel": {
+      "type": "string",
+      "description": "launch: channel override (chromium only, e.g. msedge/chrome)."
+    },
+    "executablePath": {
+      "type": "string",
+      "description": "launch: explicit browser executable path."
+    },
+    "windowWidth": {
+      "type": "integer",
+      "description": "launch: window width."
+    },
+    "windowHeight": {
+      "type": "integer",
+      "description": "launch: window height."
+    },
+    "session": {
+      "type": "string",
+      "description": "Session name (default 'default')."
+    },
+    "page": {
+      "type": "string",
+      "description": "bind: page id from pages, e.g. c0.p1."
+    },
+    "expression": {
+      "type": "string",
+      "description": "eval: JavaScript expression evaluated in the page."
+    },
+    "selector": {
+      "type": "string",
+      "description": "eval/click/fill/type/select/snapshot/screenshot/wait: CSS selector the action targets."
+    },
+    "index": {
+      "type": "integer",
+      "description": "click/fill/type/select: 0-based match index (default 0)."
+    },
+    "value": {
+      "type": "string",
+      "description": "fill/select: value to set or option value/label."
+    },
+    "text": {
+      "type": "string",
+      "description": "type: text to press key by key."
+    },
+    "delayMs": {
+      "type": "integer",
+      "description": "type: delay between keystrokes."
+    },
+    "by": {
+      "type": "string",
+      "description": "select: match option by value or visible label (default value).",
+      "enum": [
+        "value",
+        "label"
+      ]
+    },
+    "waitUntil": {
+      "type": "string",
+      "description": "navigate/reload/back/forward: when to consider navigation done (default load).",
+      "enum": [
+        "load",
+        "domcontentloaded",
+        "networkidle",
+        "commit"
+      ]
+    },
+    "state": {
+      "type": "string",
+      "description": "wait: selector state (default visible).",
+      "enum": [
+        "attached",
+        "detached",
+        "visible",
+        "hidden"
+      ]
+    },
+    "loadState": {
+      "type": "string",
+      "description": "wait: page load state to wait for.",
+      "enum": [
+        "load",
+        "domcontentloaded",
+        "networkidle"
+      ]
+    },
+    "fullPage": {
+      "type": "boolean",
+      "description": "screenshot: capture the full scrollable page."
+    },
+    "maxChars": {
+      "type": "integer",
+      "description": "snapshot: result cap (default from row config)."
+    },
+    "timeoutMs": {
+      "type": "integer",
+      "description": "Per-call timeout override; wait: sleep duration."
+    },
+    "path": {
+      "type": "string",
+      "description": "screenshot: absolute output path for the PNG."
+    },
+    "clear": {
+      "type": "boolean",
+      "description": "console/network: flush the buffers after reading."
+    }
+  },
+  "required": [
+    "action"
+  ]
+}
+```
+
+Source: [`packages/extensions/tool-playwright-debug/src/index.ts`](../packages/extensions/tool-playwright-debug/src/index.ts)
+
+playwright_web_debug drives a real browser through Playwright; launch/attach session state is process-local and screenshots land at the caller-provided path.

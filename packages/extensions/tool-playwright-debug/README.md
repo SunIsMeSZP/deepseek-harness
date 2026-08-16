@@ -1,5 +1,7 @@
 # dsh-tool-playwright-debug
 
+English | [中文](README.zh.md)
+
 Launch or attach to a real browser and drive it with Playwright: navigate
 pages, evaluate JavaScript in the page context, click/fill/type/select with
 Playwright auto-waiting, snapshot the accessibility tree, capture console and

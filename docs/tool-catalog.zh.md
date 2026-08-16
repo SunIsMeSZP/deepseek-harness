@@ -43,6 +43,7 @@
 | `@deepseek-ai/dsh-tool-web` | `web_fetch`、`web_search` | `ctx.tools`、`ctx.web`、`ctx.systemPrompt` | `tool/call`、`tool/result` | - | web_search 和 web_fetch 将提供方选择置于 ctx.web 之后，使模型可见 schema 在更换后端时保持稳定。 |
 | `@deepseek-ai/dsh-clock` | `clock` | `ctx.tools` | `tool/call`、`tool/result` | - | clock 工具在配置或按调用的 IANA 时区读取系统时钟；非法时区以 CLOCK_INVALID_ZONE 响亮失败。 |
 | `@deepseek-ai/dsh-weather` | `weather` | `ctx.tools`、`ctx.web` | `tool/call`、`tool/result` | - | weather 工具经 web 缝从可配置的预报 API 获取当前天气；拒绝分别携带 WEATHER_LOCATION_REQUIRED、WEATHER_INVALID_COORDINATES、WEATHER_API_STATUS 与 WEATHER_BAD_RESPONSE。 |
+| `@deepseek-ai/dsh-tool-playwright-debug` | `playwright_web_debug` | `ctx.tools` | `tool/call`、`tool/result` | - | playwright_web_debug 通过 Playwright 驱动真实浏览器；launch/attach 的会话状态进程内保存，截图写入调用方提供的路径。 |
 
 <a id="deepseek-aidsh-tool-ask-user"></a>
 
@@ -1938,3 +1939,189 @@ clock 工具在配置或按调用的 IANA 时区读取系统时钟；非法时�
 来源：[`packages/plugins/weather/src/index.ts`](../packages/plugins/weather/src/index.ts)
 
 weather 工具经 web 缝从可配置的预报 API 获取当前天气；拒绝分别携带 WEATHER_LOCATION_REQUIRED、WEATHER_INVALID_COORDINATES、WEATHER_API_STATUS 与 WEATHER_BAD_RESPONSE。
+<a id="deepseek-aidsh-tool-playwright-debug"></a>
+
+## `@deepseek-ai/dsh-tool-playwright-debug`
+
+### `playwright_web_debug`
+
+通过 Playwright 启动或附着真实浏览器并上手调试网页。
+动作：
+- launch：启动浏览器实例（engine/channel 来自行配置的 browser/channel——默认用已安装的 Edge 的 chromium；args 可覆盖 browser/channel/executablePath/headless/windowWidth/windowHeight）。打开全新的 default 会话；url 尽力加载（启动页失败会报告，不是致命错误）。
+- attach：用 chromium.connectOverCDP 连接一个已经在跑的浏览器（cdpPort 配置，例如 Edge/Chrome 加 --remote-debugging-port=9333）。外部浏览器永不被停止；quit 只解除连接。default 会话绑定其第一个非内部页面（跳过 edge://、chrome:// 与扩展页面）。
+- status：模式（owned/attached）、引擎与会话列表。
+- pages：列出所有打开的页面（id 形如 c<context>.p<page>），带 url/title 及其绑定的会话。
+- bind：把具名会话（默认 'default'）绑定到 pages 里的某个页面 id。被绑定的页面永不被本工具关闭。
+- open-page：创建全新隔离的 context+page 并绑定到会话名（默认 'default'）；可选起始 url。
+- navigate：跳转到 url（自动补 http:// 前缀）并按 waitUntil（默认 'load'）等待。
+- reload / back / forward：对应导航，waitUntil 选择相同。
+- eval：在页面里执行 JavaScript 表达式（Playwright 自动 await promise）。带 selector 时，表达式以 `el` 绑定首个匹配元素运行。返回 JSON 值；超出 maxResultChars 时返回截断预览；undefined/不可序列化结果如实报告。
+- snapshot：body（或 selector 匹配元素）的可访问性树（ariaSnapshot）。“看见”页面的最佳方式：角色、名称与输入。受 maxChars 限制。
+- click / fill / type / select：用 Playwright 自动等待驱动首个（或 index 指定的）匹配 selector 的元素。fill 设置输入框值；type 逐键按下（delayMs 可选）；select 按 value 选 <select> 选项，by:'label' 时按可见标签。
+- wait：等待 selector（state: attached/detached/visible/hidden，默认 visible）、url glob（waitForURL）、loadState（load/domcontentloaded/networkidle）或 timeoutMs 墙钟时间。四者恰好必选其一。
+- console：会话的缓冲 console 消息 + 页面错误；clear:true 读取后清空。
+- network：会话的缓冲请求/响应（method、url、status、resourceType、failed）；clear:true 读取后清空。
+- screenshot：把页面（fullPage:true 整页）或元素（selector）截为 PNG 写入 path（建议绝对路径，例如会话工作区内）或临时文件；返回 savedTo 与 bytes，便于 read_image 读取。
+- close-session：丢弃一个具名会话。launch/open-page 创建的会话会关掉其标签页；bind/attach 绑定的会话只解除绑定。
+- quit：owned 模式终止浏览器；attached 模式只解除连接，外部浏览器继续运行。
+用法：先 launch 或 attach 一次，然后复用 default 会话。同一时间一个浏览器；换引擎前先 quit。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "description": "What to do.",
+      "enum": [
+        "launch",
+        "attach",
+        "status",
+        "pages",
+        "bind",
+        "open-page",
+        "navigate",
+        "reload",
+        "back",
+        "forward",
+        "eval",
+        "snapshot",
+        "click",
+        "fill",
+        "type",
+        "select",
+        "wait",
+        "console",
+        "network",
+        "screenshot",
+        "close-session",
+        "quit"
+      ]
+    },
+    "url": {
+      "type": "string",
+      "description": "launch/open-page: start page. navigate: destination URL. wait: url glob to wait for."
+    },
+    "headless": {
+      "type": "boolean",
+      "description": "launch: run the browser headless (overrides the row config)."
+    },
+    "browser": {
+      "type": "string",
+      "description": "launch: engine override (chromium/firefox/webkit)."
+    },
+    "channel": {
+      "type": "string",
+      "description": "launch: channel override (chromium only, e.g. msedge/chrome)."
+    },
+    "executablePath": {
+      "type": "string",
+      "description": "launch: explicit browser executable path."
+    },
+    "windowWidth": {
+      "type": "integer",
+      "description": "launch: window width."
+    },
+    "windowHeight": {
+      "type": "integer",
+      "description": "launch: window height."
+    },
+    "session": {
+      "type": "string",
+      "description": "Session name (default 'default')."
+    },
+    "page": {
+      "type": "string",
+      "description": "bind: page id from pages, e.g. c0.p1."
+    },
+    "expression": {
+      "type": "string",
+      "description": "eval: JavaScript expression evaluated in the page."
+    },
+    "selector": {
+      "type": "string",
+      "description": "eval/click/fill/type/select/snapshot/screenshot/wait: CSS selector the action targets."
+    },
+    "index": {
+      "type": "integer",
+      "description": "click/fill/type/select: 0-based match index (default 0)."
+    },
+    "value": {
+      "type": "string",
+      "description": "fill/select: value to set or option value/label."
+    },
+    "text": {
+      "type": "string",
+      "description": "type: text to press key by key."
+    },
+    "delayMs": {
+      "type": "integer",
+      "description": "type: delay between keystrokes."
+    },
+    "by": {
+      "type": "string",
+      "description": "select: match option by value or visible label (default value).",
+      "enum": [
+        "value",
+        "label"
+      ]
+    },
+    "waitUntil": {
+      "type": "string",
+      "description": "navigate/reload/back/forward: when to consider navigation done (default load).",
+      "enum": [
+        "load",
+        "domcontentloaded",
+        "networkidle",
+        "commit"
+      ]
+    },
+    "state": {
+      "type": "string",
+      "description": "wait: selector state (default visible).",
+      "enum": [
+        "attached",
+        "detached",
+        "visible",
+        "hidden"
+      ]
+    },
+    "loadState": {
+      "type": "string",
+      "description": "wait: page load state to wait for.",
+      "enum": [
+        "load",
+        "domcontentloaded",
+        "networkidle"
+      ]
+    },
+    "fullPage": {
+      "type": "boolean",
+      "description": "screenshot: capture the full scrollable page."
+    },
+    "maxChars": {
+      "type": "integer",
+      "description": "snapshot: result cap (default from row config)."
+    },
+    "timeoutMs": {
+      "type": "integer",
+      "description": "Per-call timeout override; wait: sleep duration."
+    },
+    "path": {
+      "type": "string",
+      "description": "screenshot: absolute output path for the PNG."
+    },
+    "clear": {
+      "type": "boolean",
+      "description": "console/network: flush the buffers after reading."
+    }
+  },
+  "required": [
+    "action"
+  ]
+}
+```
+
+来源：[`packages/extensions/tool-playwright-debug/src/index.ts`](../packages/extensions/tool-playwright-debug/src/index.ts)
+
+playwright_web_debug 通过 Playwright 驱动真实浏览器；launch/attach 的会话状态进程内保存，截图写入调用方提供的路径。
