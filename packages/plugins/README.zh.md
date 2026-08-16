@@ -17,6 +17,7 @@
 | 包 | 职责 | 工具 |
 |---|---|---|
 | [`clock/`](clock/README.md) | 面向模型的 IANA 时区挂钟读数 | `clock` |
+| [`weather/`](weather/README.md) | 面向模型的当前天气（经 web 缝） | `weather` |
 
 清单形态由 `pnpm run plugin:verify`（`hygiene` 的一部分）校验；`consumes`
 的服务解析仍以 cordis 启动为权威。设计出处：[插件工程层 Agent Note](../../.agents/notes/proposed/process/2026-08-17-plugin-engineering-layer.md)。

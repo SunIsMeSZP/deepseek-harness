@@ -1,0 +1,42 @@
+# Test-only composition: exercise the weather plugin's real Loader/app path with a scripted tool call and a fake fetch provider.
+- id: weather-mock-llm
+  name: './weather-mock-llm.ts'
+
+- id: weather-mock-fetch
+  name: './weather-mock-fetch.ts'
+
+# Managed child-process groups for the bash executor (spawn/kill/output plumbing).
+- id: subprocess
+  name: '@deepseek-ai/dsh-subprocess-local'
+
+- id: bash
+  name: '@deepseek-ai/dsh-bash-local'
+
+- id: web
+  name: '@deepseek-ai/dsh-web'
+  config:
+    fetchProvider: weather-mock-fetch
+
+- id: weather
+  name: '@deepseek-ai/dsh-weather'
+  config: {}
+
+- id: agent-spine
+  name: '@deepseek-ai/dsh-agent-spine-demo'
+  config:
+    agents:
+      - id: main
+        provider: weather-mock
+        model: weather-mock
+        cwd: !!js process.cwd()
+    persona: 'Prove the weather tool round trip.'
+    workspaceContext: false
+
+- id: persistence
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'
+  config:
+    root: './.sessions'
+    compression: 'none'
+
+- id: checkpoint-policy
+  name: '@deepseek-ai/dsh-session-checkpoint-policy'

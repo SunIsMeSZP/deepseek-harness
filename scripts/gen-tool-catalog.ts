@@ -64,6 +64,7 @@ import VmWorkflowEngine from '@deepseek-ai/dsh-workflow-worker-thread'
 import * as ToolRalph from '@deepseek-ai/dsh-tool-ralph'
 import * as ToolWorkflow from '@deepseek-ai/dsh-tool-workflow'
 import * as Clock from '@deepseek-ai/dsh-clock'
+import * as Weather from '@deepseek-ai/dsh-weather'
 import { githubSlug } from './verify-md-links.ts'
 
 /** Attachment seam marker that makes the attachments-conditional `read_image` schema harvestable. */
@@ -563,6 +564,19 @@ const TOOL_PACKAGES: ToolPackage[] = [
     },
     note:
       'The clock tool reads the system clock in a configured or per-call IANA zone; invalid zones fail the call loud with CLOCK_INVALID_ZONE.',
+  },
+  {
+    pkg: '@deepseek-ai/dsh-weather',
+    dir: 'weather',
+    source: 'packages/plugins/weather/src/index.ts',
+    requires: ['ctx.tools', 'ctx.web'],
+    writes: ['tool/call', 'tool/result'],
+    async mount(ctx) {
+      await ctx.plugin(WebRuntime)
+      await ctx.plugin(Weather)
+    },
+    note:
+      'The weather tool fetches current conditions through the web seam from a configurable forecast API; refusals carry WEATHER_LOCATION_REQUIRED, WEATHER_INVALID_COORDINATES, WEATHER_API_STATUS, and WEATHER_BAD_RESPONSE.',
   },
 ]
 

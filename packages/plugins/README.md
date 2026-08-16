@@ -15,5 +15,6 @@ The engineering home for plugins developed against the harness's own extension p
 | Package | Role | Tool |
 |---|---|---|
 | [`clock/`](clock/README.md) | Model-facing wall-clock readings in an IANA zone | `clock` |
+| [`weather/`](weather/README.md) | Model-facing current conditions through the web seam | `weather` |
 
 Manifest shape is validated by `pnpm run plugin:verify` (part of `hygiene`); cordis boot remains the authoritative service resolver for `consumes`. Design home: [the plugin engineering layer Agent Note](../../.agents/notes/proposed/process/2026-08-17-plugin-engineering-layer.md).

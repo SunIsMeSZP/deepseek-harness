@@ -41,6 +41,8 @@
       "@deepseek-ai/dsh-invariants": ["./packages/runtime-diagnostics/invariants/src/index.ts"],
       "@deepseek-ai/dsh-clock": ["./packages/plugins/clock/src/index.ts"],
       "@deepseek-ai/dsh-clock/invariant": ["./packages/plugins/clock/src/invariant.ts"],
+      "@deepseek-ai/dsh-weather": ["./packages/plugins/weather/src/index.ts"],
+      "@deepseek-ai/dsh-weather/invariant": ["./packages/plugins/weather/src/invariant.ts"],
       "@deepseek-ai/dsh-tool-call-timeout-policy": ["./packages/guard/timeout-policy/src"],
       "@deepseek-ai/dsh-tool-call-timeout-policy/invariant": ["./packages/guard/timeout-policy/src/invariant.ts"],
       "@deepseek-ai/dsh-typert-registry": ["./packages/typert/registry/src/index.ts"],

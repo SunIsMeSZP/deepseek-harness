@@ -4,3 +4,7 @@
   name: '@deepseek-ai/cordis-plugin-include'
   config:
     path: ./clock/cordis.yml
+- id: include-weather
+  name: '@deepseek-ai/cordis-plugin-include'
+  config:
+    path: ./weather/cordis.yml
